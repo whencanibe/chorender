@@ -1,0 +1,29 @@
+# Build
+build/
+*.o
+*.a
+*.so
+*.dylib
+
+# CMake
+CMakeCache.txt
+CMakeFiles/
+cmake_install.cmake
+compile_commands.json
+Makefile
+
+# Binary
+opengl_base
+
+# Dependencies (fetched at build time)
+_deps/
+
+# VSCode
+.vscode/settings.local.json
+
+# Claude
+.claude/
+.cache/
+
+# macOS
+.DS_Store
