@@ -155,9 +155,9 @@ int main(int argc, char const *argv[])
     std::cout << "GLEW Version: " << glewGetString(GLEW_VERSION) << std::endl;
 
     // Get actual framebuffer size (handles Retina displays)
-    int framebufferWidth, framebufferHeight;
-    glfwGetFramebufferSize(window, &framebufferWidth, &framebufferHeight);
-    glViewport(0, 0, framebufferWidth, framebufferHeight);
+    // int framebufferWidth, framebufferHeight;
+    // glfwGetFramebufferSize(window, &framebufferWidth, &framebufferHeight);
+    // glViewport(0, 0, framebufferWidth, framebufferHeight);
     glEnable(GL_DEPTH_TEST);
 
     stbi_set_flip_vertically_on_load(true);
