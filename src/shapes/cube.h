@@ -1,3 +1,6 @@
+#ifndef CUBE_H
+#define CUBE_H
+
 #include <GL/glew.h>
 
 #include "helper/matrix.h"
@@ -61,3 +64,5 @@ public:
 
     void Draw(Shader &shader);
 };
+
+#endif CUBE_H
