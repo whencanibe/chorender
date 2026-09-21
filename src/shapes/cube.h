@@ -65,4 +65,4 @@ public:
     void Draw(Shader &shader);
 };
 
-#endif CUBE_H
+#endif

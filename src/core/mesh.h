@@ -29,6 +29,12 @@ struct Texture
     std::string path;
 };
 
+struct Material
+{
+    Vec3 Specular = Vec3(0.0f); // Ks
+    float Shininess = 32.0f;    // Ns
+};
+
 class Mesh
 {
 public:
@@ -36,10 +42,11 @@ public:
     std::vector<Vertex> vertices;
     std::vector<uint32_t> indices;
     std::vector<Texture> textures;
+    Material material;
     uint32_t VAO;
 
     // constructor
-    Mesh(std::vector<Vertex> vertices, std::vector<uint32_t> indices, std::vector<Texture> textures);
+    Mesh(std::vector<Vertex> vertices, std::vector<uint32_t> indices, std::vector<Texture> textures, Material material = Material());
 
     // render the mesh
     void Draw(Shader &shader);

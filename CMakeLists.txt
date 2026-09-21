@@ -1,5 +1,5 @@
 cmake_minimum_required(VERSION 3.16)
-project(opengl_base LANGUAGES CXX)
+project(chorender LANGUAGES CXX)
 
 set(CMAKE_CXX_STANDARD 17)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
@@ -27,6 +27,30 @@ find_package(GLEW REQUIRED)
 # Find Assimp
 find_package(assimp REQUIRED)
 
+# Dear ImGui (fetched at configure time into build/_deps; pinned to a release tag)
+include(FetchContent)
+FetchContent_Declare(
+    imgui
+    GIT_REPOSITORY https://github.com/ocornut/imgui.git
+    GIT_TAG        v1.91.9b
+    GIT_SHALLOW    TRUE
+)
+FetchContent_MakeAvailable(imgui)
+
+add_library(imgui STATIC
+    ${imgui_SOURCE_DIR}/imgui.cpp
+    ${imgui_SOURCE_DIR}/imgui_draw.cpp
+    ${imgui_SOURCE_DIR}/imgui_tables.cpp
+    ${imgui_SOURCE_DIR}/imgui_widgets.cpp
+    ${imgui_SOURCE_DIR}/backends/imgui_impl_glfw.cpp
+    ${imgui_SOURCE_DIR}/backends/imgui_impl_opengl3.cpp
+)
+target_include_directories(imgui PUBLIC
+    ${imgui_SOURCE_DIR}
+    ${imgui_SOURCE_DIR}/backends
+)
+target_link_libraries(imgui PUBLIC glfw)
+
 # Include directories
 include_directories(${OPENGL_INCLUDE_DIRS})
 include_directories(${CMAKE_SOURCE_DIR}/src)
@@ -46,6 +70,7 @@ target_link_libraries(${PROJECT_NAME}
     glfw
     GLEW::GLEW
     assimp::assimp
+    imgui
 )
 
 # Platform-specific linking

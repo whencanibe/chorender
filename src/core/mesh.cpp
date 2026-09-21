@@ -1,10 +1,11 @@
 #include "core/mesh.h"
 
-Mesh::Mesh(std::vector<Vertex> vertices, std::vector<uint32_t> indices, std::vector<Texture> textures)
+Mesh::Mesh(std::vector<Vertex> vertices, std::vector<uint32_t> indices, std::vector<Texture> textures, Material material)
 {
     this->vertices = vertices;
     this->indices = indices;
     this->textures = textures;
+    this->material = material;
 
     // now that we have all the required data, set the vertex buffers and its attribute pointers.
     setupMesh();
@@ -37,6 +38,10 @@ void Mesh::Draw(Shader &shader)
         // and finally bind the texture
         glBindTexture(GL_TEXTURE_2D, textures[i].id);
     }
+
+    // 머티리얼 상수
+    shader.setVec3("uKs", material.Specular);
+    shader.setFloat("uShininess", material.Shininess);
 
     // draw mesh
     glBindVertexArray(VAO);
@@ -75,7 +80,7 @@ void Mesh::setupMesh()
     // vertex texture coords
     glEnableVertexAttribArray(2);
     glVertexAttribPointer(2, 2, GL_FLOAT, GL_FALSE, sizeof(Vertex), (void *)offsetof(Vertex, TexCoords));
-    
+
     // vertex tangent
     glEnableVertexAttribArray(3);
     glVertexAttribPointer(3, 3, GL_FLOAT, GL_FALSE, sizeof(Vertex), (void *)offsetof(Vertex, Tangent));

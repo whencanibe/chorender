@@ -1,211 +1,232 @@
 #include <GL/glew.h>
-#include <GLFW/glfw3.h>
 
 #include <iostream>
+#include <exception>
+
+#include "platform/window.h"
+#include "platform/input.h"
+#include "platform/imgui_backend.h"
+
+#include <imgui.h>
 
 #include "core/shader.h"
-#include "helper/stb_image.h"
-#include "helper/matrix.h"
 #include "core/model.h"
-
 #include "core/camera.h"
+#include "core/framebuffer.h"
+#include "helper/matrix.h"
 #include "shapes/cube.h"
+#include "renderer/skybox.h"
+#include "renderer/screen_quad.h"
+#include "renderer/light.h"
+#include "renderer/shadow_map.h"
 
 constexpr int kWindowWidth = 1200;
 constexpr int kWindowHeight = 800;
 
-float deltaTime = 0.0f; // Time between current frame and last frame
-float lastFrame = 0.0f; // Time of last frame
-
-// 각 방향키가 마지막으로 "눌린" 시각
-double wPressTime = -1.0, sPressTime = -1.0;
-double aPressTime = -1.0, dPressTime = -1.0;
-
-Camera camera(Vec3(0.0f, 0.0f, 3.0f));
-
-float lastX = kWindowWidth / 2.0f;
-float lastY = kWindowHeight / 2.0f;
-bool firstMouse = true;
-
-void OnMouseMoveCallback(GLFWwindow *window, double xposIn, double yposIn)
+int main()
+try
 {
-    float xpos = static_cast<float>(xposIn);
-    float ypos = static_cast<float>(yposIn);
+    Window window(kWindowWidth, kWindowHeight, "Sponza");
+    Input input(window);
+    ImGuiBackend imgui(window);
+    Camera camera(Vec3(0.0f, 0.0f, 3.0f));
 
-    if (firstMouse)
+    Shader shader("../src/shaders/basic.vert", "../src/shaders/basic.frag");
+    Cube cube;
+
+    Shader lightShader("../src/shaders/lightShader.vert", "../src/shaders/lightShader.frag");
+
+    // Directional shadow map. Unit 8 keeps clear of the material slots Mesh::Draw uses (0-3).
+    constexpr int kShadowMapUnit = 8;
+    ShadowMap shadowMap(2048);
+    lightShader.use();
+    lightShader.setInt("shadowMap", kShadowMapUnit);
+    bool shadowsEnabled = true;
+    float shadowBias = 0.005f;
+    int pcfRadius = 1;
+
+    // Lights. Point lights are spread along the atrium on X, raised above the floor.
+    DirLight sun;
+    sun.direction = Vec3(1.0f, -1.0f, 1.0f);
+
+    PointLight pointLights[4];
+    pointLights[0].position = Vec3(-6.0f, 5.0f, 0.0f);
+    pointLights[1].position = Vec3(-2.0f, 5.0f, 0.0f);
+    pointLights[2].position = Vec3(2.0f, 5.0f, 0.0f);
+    pointLights[3].position = Vec3(6.0f, 5.0f, 0.0f);
+
+    SpotLight flashlight; // follows the camera; position/direction refreshed every frame
+
+    // Point lights are static: uniforms persist per program, so upload once.
+    // The sun is edited from the UI, so it is re-uploaded every frame.
+    lightShader.use();
+    for (int i = 0; i < 4; i++)
+        UploadLight(lightShader, pointLights[i], i);
+
+    Model sponza("../assets/crytek_sponza/sponza.obj");
+    Shader screenShader("../src/shaders/screen.vert", "../src/shaders/screen.frag");
+
+    // Scene renders linear HDR into this FBO; the post pass (screenShader) tone maps + gamma encodes it.
+    // RGBA16F keeps values above 1.0 and avoids banding in the darks that 8-bit linear would show.
+    // Sized from the real framebuffer, not the window, so it stays correct if Retina scaling is enabled.
+    int fbW, fbH;
+    window.GetFramebufferSize(fbW, fbH);
+    FramebufferSpec sceneSpec;
+    sceneSpec.width = fbW;
+    sceneSpec.height = fbH;
+    sceneSpec.colorInternalFormat = GL_RGBA16F;
+    Framebuffer sceneFbo(sceneSpec);
+    ScreenQuad screenQuad;
+    float exposure = 1.0f;
+
+    Skybox skybox({
+        "../assets/skybox/right.jpg",
+        "../assets/skybox/left.jpg",
+        "../assets/skybox/top.jpg",
+        "../assets/skybox/bottom.jpg",
+        "../assets/skybox/front.jpg",
+        "../assets/skybox/back.jpg",
+    });
+
+    bool spotLightOn = true;
+
+    // Sponza is authored in centimeters; 0.01 brings it to meters.
+    Mat4 sponzaModel = Scale(Mat4(), Vec3(0.01f));
+    Mat3 sponzaNormalMat = inverseTranspose(Mat3(sponzaModel));
+    // World-space bounding sphere the shadow map must cover (crytek bounds x 0.01).
+    const Vec3 sceneCenter(-0.6f, 6.5f, -0.4f);
+    const float sceneRadius = 24.0f;
+
+    // Model loading stalled the loop; drop the cursor jump and restart the frame clock.
+    window.PollEvents();
+    input.ResetMouse();
+    float lastFrame = static_cast<float>(window.GetTime());
+
+    while (!window.ShouldClose())
     {
-        lastX = xpos;
-        lastY = ypos;
-        firstMouse = false;
-    }
+        window.PollEvents();
 
-    float xoffset = xpos - lastX;
-    float yoffset = lastY - ypos; // 반전
+        // Re-read every frame: the backing store can change size without a resize event
+        // (e.g. the window moving to a display with a different scale).
+        window.GetFramebufferSize(fbW, fbH);
+        sceneFbo.Resize(fbW, fbH); // no-op when unchanged
 
-    lastX = xpos;
-    lastY = ypos;
-
-    camera.ProcessMouseMovement(xoffset, yoffset);
-}
-
-void OnFramebufferSizeChange(GLFWwindow *window, int width, int height)
-{
-    glViewport(0, 0, width, height);
-}
-
-void OnKeyEventCallback(GLFWwindow *window,
-                        int key, int scancode, int action, int mods)
-{
-    if (key == GLFW_KEY_ESCAPE && action == GLFW_PRESS)
-        glfwSetWindowShouldClose(window, true);
-
-    if (action != GLFW_PRESS)
-        return; // 최초로 눌린 시간만 기록
-
-    double now = glfwGetTime();
-    if (key == GLFW_KEY_W)
-        wPressTime = now;
-    if (key == GLFW_KEY_S)
-        sPressTime = now;
-    if (key == GLFW_KEY_A)
-        aPressTime = now;
-    if (key == GLFW_KEY_D)
-        dPressTime = now;
-}
-
-void ProcessInput(GLFWwindow *window)
-{
-    bool wHeld = glfwGetKey(window, GLFW_KEY_W) == GLFW_PRESS;
-    bool sHeld = glfwGetKey(window, GLFW_KEY_S) == GLFW_PRESS;
-    bool aHeld = glfwGetKey(window, GLFW_KEY_A) == GLFW_PRESS;
-    bool dHeld = glfwGetKey(window, GLFW_KEY_D) == GLFW_PRESS;
-
-    // 전/후 축: 둘 다 눌려있으면 더 나중에 눌린 쪽 우선
-    if (wHeld && sHeld)
-    {
-        if (wPressTime > sPressTime)
-            camera.ProcessKeyboard(CameraMovement::FORWARD, deltaTime);
-        else
-            camera.ProcessKeyboard(CameraMovement::BACKWARD, deltaTime);
-    }
-    else if (wHeld)
-        camera.ProcessKeyboard(CameraMovement::FORWARD, deltaTime);
-
-    else if (sHeld)
-        camera.ProcessKeyboard(CameraMovement::BACKWARD, deltaTime);
-
-    // 좌/우 축도 동일하게
-    if (aHeld && dHeld)
-    {
-        if (aPressTime > dPressTime)
-            camera.ProcessKeyboard(CameraMovement::LEFT, deltaTime);
-        else
-            camera.ProcessKeyboard(CameraMovement::RIGHT, deltaTime);
-    }
-    else if (aHeld)
-        camera.ProcessKeyboard(CameraMovement::LEFT, deltaTime);
-    else if (dHeld)
-        camera.ProcessKeyboard(CameraMovement::RIGHT, deltaTime);
-}
-
-int main(int argc, char const *argv[])
-{
-    if (!glfwInit())
-    {
-        const char *description = nullptr;
-        glfwGetError(&description);
-        std::cerr << "Failed to initialize GLFW" << description << std::endl;
-
-        return -1;
-    }
-
-    glfwWindowHint(GLFW_CONTEXT_VERSION_MAJOR, 4);
-    glfwWindowHint(GLFW_CONTEXT_VERSION_MINOR, 1);
-    glfwWindowHint(GLFW_OPENGL_PROFILE, GLFW_OPENGL_CORE_PROFILE);
-    glfwWindowHint(GLFW_COCOA_RETINA_FRAMEBUFFER, GLFW_FALSE); // mac retina display
-
-#ifdef __APPLE__
-    glfwWindowHint(GLFW_OPENGL_FORWARD_COMPAT, GL_TRUE);
-#endif
-
-    GLFWwindow *window = glfwCreateWindow(kWindowWidth, kWindowHeight, "window",
-                                          nullptr, nullptr);
-    if (!window)
-    {
-        std::cerr << "Failed to create GLFW window" << std::endl;
-
-        glfwTerminate();
-        return -1;
-    }
-    // 창을 만들고 거기에 생성된 컨텍스트를 사용하겠다는 코드
-    glfwMakeContextCurrent(window);
-
-    // hides cursor and makes it move infinitely
-    glfwSetInputMode(window, GLFW_CURSOR, GLFW_CURSOR_DISABLED);
-
-    GLenum err = glewInit();
-    if (err != GLEW_OK)
-    {
-        std::cerr << "Failed to initialize GLEW: " << glewGetErrorString(err) << std::endl;
-        glfwTerminate();
-        return -1;
-    }
-
-    std::cout << "OpenGL Version: " << glGetString(GL_VERSION) << std::endl;
-    std::cout << "GLEW Version: " << glewGetString(GLEW_VERSION) << std::endl;
-
-    // Get actual framebuffer size (handles Retina displays)
-    // int framebufferWidth, framebufferHeight;
-    // glfwGetFramebufferSize(window, &framebufferWidth, &framebufferHeight);
-    // glViewport(0, 0, framebufferWidth, framebufferHeight);
-    glEnable(GL_DEPTH_TEST);
-
-    stbi_set_flip_vertically_on_load(true);
-
-    glfwSetFramebufferSizeCallback(window, OnFramebufferSizeChange);
-    glfwSetKeyCallback(window, OnKeyEventCallback);
-    glfwSetCursorPosCallback(window, OnMouseMoveCallback);
-
-    Shader shader = Shader("../src/shaders/basic.vert", "../src/shaders/basic.frag");
-    Cube cube = Cube();
-
-    glfwPollEvents(); // reset the delta value for mouse while loading a model
-    firstMouse = true;
-    lastFrame = static_cast<float>(glfwGetTime());
-    
-    while (!glfwWindowShouldClose(window))
-    {
-        glClearColor(0.0f, 0.0f, 0.0f, 1.0f);
-        glClear(GL_COLOR_BUFFER_BIT | GL_DEPTH_BUFFER_BIT);
-
-        float currentFrame = static_cast<float>(glfwGetTime());
-        deltaTime = currentFrame - lastFrame;
+        float currentFrame = static_cast<float>(window.GetTime());
+        float deltaTime = currentFrame - lastFrame;
         lastFrame = currentFrame;
 
-        ProcessInput(window);
+        input.Update(camera, deltaTime);
+        if (input.WasKeyPressed(GLFW_KEY_TAB))
+            input.SetCameraMode(!input.IsCameraMode());
+        if (input.WasKeyPressed(GLFW_KEY_Q))
+            spotLightOn = !spotLightOn;
+
+        // UI is declared here so its values are applied in this same frame; drawn after the post pass.
+        imgui.BeginFrame();
+        ImGui::Begin("Renderer");
+        ImGui::Text("%.1f fps (%.2f ms)", ImGui::GetIO().Framerate, 1000.0f / ImGui::GetIO().Framerate);
+        ImGui::TextDisabled("Tab: toggle camera / UI   Q: flashlight");
+        ImGui::Separator();
+        ImGui::SliderFloat("Exposure", &exposure, 0.1f, 5.0f);
+        ImGui::Checkbox("Flashlight", &spotLightOn);
+        if (ImGui::CollapsingHeader("Sun", ImGuiTreeNodeFlags_DefaultOpen))
+        {
+            ImGui::SliderFloat3("Direction", &sun.direction.X, -1.0f, 1.0f);
+            ImGui::ColorEdit3("Diffuse", &sun.diffuse.X);
+            ImGui::ColorEdit3("Ambient", &sun.ambient.X);
+        }
+        if (ImGui::CollapsingHeader("Shadows", ImGuiTreeNodeFlags_DefaultOpen))
+        {
+            ImGui::Checkbox("Enabled", &shadowsEnabled);
+            ImGui::SliderFloat("Bias", &shadowBias, 0.0f, 0.02f, "%.4f");
+            ImGui::SliderInt("PCF radius", &pcfRadius, 0, 3);
+            // GL textures are bottom-up; flip V so the map is not upside down.
+            ImGui::Image((ImTextureID)(intptr_t)shadowMap.DepthTexture(), ImVec2(256, 256), ImVec2(0, 1), ImVec2(1, 0));
+        }
+        ImGui::End();
+
+        // shadow pass: scene depth from the sun
+        const Mat4 lightSpace = ShadowMap::ComputeLightSpace(sun.direction, sceneCenter, sceneRadius);
+        shadowMap.Begin(lightSpace);
+        shadowMap.GetShader().setMat4("uModel", sponzaModel);
+        sponza.Draw(shadowMap.GetShader());
+        shadowMap.End();
+
+        // scene pass: scene -> sceneFbo
+        sceneFbo.Bind();
+        glClearColor(0.0f, 0.0f, 0.0f, 1.0f);
+        glClear(GL_COLOR_BUFFER_BIT | GL_DEPTH_BUFFER_BIT);
+        glEnable(GL_DEPTH_TEST);
+
+        // sceneFbo matches the framebuffer size (reconciled at the top of the loop)
+        const float aspect = static_cast<float>(sceneFbo.Width()) / static_cast<float>(sceneFbo.Height());
 
         shader.use();
-
-        int fbW, fbH;
-        glfwGetFramebufferSize(window, &fbW, &fbH);
-        const float aspect = (fbH > 0) ? static_cast<float>(fbW) / static_cast<float>(fbH)
-                                       : 1.0f;
-
-        Mat4 model = Mat4();
         Mat4 view = camera.GetViewMatrix();
         Mat4 proj = Perspective(toRadian(camera.Zoom), aspect, 0.1f, 100.0f);
 
-        shader.setMat4("uModel", model);
         shader.setMat4("uView", view);
         shader.setMat4("uProj", proj);
+        for (uint32_t i = 0; i < 4; i++)
+        {
+            Mat4 model = Mat4();
+            model = Translate(model, pointLights[i].position);
+            model = Scale(model, Vec3(0.2f));
 
-        cube.Draw(shader);
+            shader.setMat4("uModel", model);
+            cube.Draw(shader);
+        }
 
-        glfwSwapBuffers(window);
-        glfwPollEvents(); // 이벤트 자동으로 수집
+        lightShader.use();
+        lightShader.setVec3("uViewPos", camera.Position);
+        lightShader.setMat4("uProj", proj);
+        lightShader.setMat4("uView", view);
+
+        lightShader.setMat4("uModel", sponzaModel);
+        lightShader.setMat3("uNormalMat", sponzaNormalMat);
+
+        lightShader.setMat4("uLightSpace", lightSpace);
+        lightShader.setBool("uShadowsEnabled", shadowsEnabled);
+        lightShader.setFloat("uShadowBias", shadowBias);
+        lightShader.setInt("uPcfRadius", pcfRadius);
+        glActiveTexture(GL_TEXTURE0 + kShadowMapUnit);
+        glBindTexture(GL_TEXTURE_2D, shadowMap.DepthTexture());
+
+        UploadLight(lightShader, sun);
+
+        flashlight.position = camera.Position;
+        flashlight.direction = camera.Front;
+        UploadLight(lightShader, flashlight);
+
+        lightShader.setBool("ubIsSpotLight", spotLightOn);
+
+        sponza.Draw(lightShader);
+
+        skybox.Draw(view, proj); // after all opaque geometry
+
+        // post pass: sceneFbo -> screen
+        Framebuffer::Unbind();
+        glViewport(0, 0, fbW, fbH); // Unbind() does not touch the viewport; the default framebuffer needs its own
+        glClearColor(1.0f, 1.0f, 1.0f, 1.0f);
+        glClear(GL_COLOR_BUFFER_BIT);
+
+        screenShader.use();
+        screenShader.setFloat("uExposure", exposure);
+        glDisable(GL_DEPTH_TEST);
+        glActiveTexture(GL_TEXTURE0);
+        glBindTexture(GL_TEXTURE_2D, sceneFbo.ColorTexture());
+        screenQuad.Draw();
+
+        imgui.EndFrame();
+
+        window.SwapBuffers();
     }
 
     glDeleteProgram(shader.ID);
-    glfwTerminate();
     return 0;
+}
+catch (const std::exception &e)
+{
+    std::cerr << e.what() << std::endl;
+    return -1;
 }

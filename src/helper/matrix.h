@@ -140,6 +140,14 @@ struct Mat4
         cols[3] = vd;
     }
 
+    Mat4(const Mat3 &m)
+    {
+        cols[0] = Vec4(m.cols[0], 0);
+        cols[1] = Vec4(m.cols[1], 0);
+        cols[2] = Vec4(m.cols[2], 0);
+        cols[3] = Vec4(0,0,0,1);
+    }
+
     Vec4 &operator[](int index)
     {
         if (index == 0)

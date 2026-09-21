@@ -10,16 +10,9 @@
 #include "helper/vec.h"
 #include "core/mesh.h"
 #include "core/shader.h"
-#include "helper/stb_image.h"
 
 #include <string>
-#include <fstream>
-#include <sstream>
-#include <iostream>
-#include <map>
 #include <vector>
-
-uint32_t TextureFromFile(const char *path, const std::string &directory, bool gamma = false);
 
 class Model
 {
@@ -50,5 +43,4 @@ private:
     std::vector<Texture> loadMaterialTextures(aiMaterial *mat, aiTextureType type, std::string typeName);
 };
 
-uint32_t TextureFromFile(const char *path, const std::string &directory, bool gamma);
 #endif

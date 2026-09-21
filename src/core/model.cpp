@@ -9,14 +9,46 @@
 #include "helper/vec.h"
 #include "core/mesh.h"
 #include "core/shader.h"
-#include "helper/stb_image.h"
+#include "core/texture.h"
 
+#include <algorithm>
 #include <string>
-#include <fstream>
-#include <sstream>
 #include <iostream>
-#include <map>
 #include <vector>
+
+static uint32_t CreateSolidTexture(uint8_t r, uint8_t g, uint8_t b, uint8_t a)
+{
+    uint32_t id;
+    glGenTextures(1, &id);
+    glBindTexture(GL_TEXTURE_2D, id);
+
+    uint8_t pixel[4] = {r, g, b, a};
+    glTexImage2D(GL_TEXTURE_2D, 0, GL_RGBA, 1, 1, 0, GL_RGBA, GL_UNSIGNED_BYTE, pixel);
+
+    glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_S, GL_REPEAT);
+    glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_T, GL_REPEAT);
+    glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MIN_FILTER, GL_NEAREST);
+    glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MAG_FILTER, GL_NEAREST);
+    return id;
+}
+
+static uint32_t GetFallbackTexture(const std::string &typeName)
+{
+    static uint32_t whiteID = 0;
+    static uint32_t normalID = 0;
+
+    if (typeName == "texture_normal")
+    {
+        if (normalID == 0)
+            normalID = CreateSolidTexture(128, 128, 255, 255);
+        return normalID;
+    }
+    if (whiteID == 0)
+        // whiteID = CreateSolidTexture(255, 255, 255, 255);
+        whiteID = CreateSolidTexture(255, 0, 255, 255); // DEBUG - pink
+
+    return whiteID;
+}
 
 Model::Model(std::string const &path, bool gamma) : gammaCorrection(gamma)
 {
@@ -30,7 +62,12 @@ void Model::Draw(Shader &shader)
 }
 
 void Model::loadModel(std::string const &path)
-{
+{   
+    // 전역상태 변경: 이미지는 2차원이고 메모리는 1차원이기에 메모리에 이미지 올릴때 원래 기본은 이미지 픽셀의 각행이
+    // 4 바이트의 배수인것으로 가정하는데, 아닌 경우에 텍스쳐 비뚤어지거나 하는 경우 발생함.
+    // 아래와 같이 쓰면 1바이트 씩 촘촘하게 메모리에 올림
+    glPixelStorei(GL_UNPACK_ALIGNMENT, 1);
+
     Assimp::Importer importer;
     const aiScene *scene = importer.ReadFile(path, aiProcess_Triangulate | aiProcess_GenSmoothNormals | aiProcess_FlipUVs | aiProcess_CalcTangentSpace);
     // check for errors
@@ -129,6 +166,16 @@ Mesh Model::processMesh(aiMesh *mesh, const aiScene *scene)
     // textures
     aiMaterial *material = scene->mMaterials[mesh->mMaterialIndex];
 
+    Material meshMaterial;
+
+    aiColor3D ks(0.0f, 0.0f, 0.0f);
+    if (material->Get(AI_MATKEY_COLOR_SPECULAR, ks) == AI_SUCCESS)
+        meshMaterial.Specular = Vec3(ks.r, ks.g, ks.b);
+
+    float ns = 32.0f;
+    if (material->Get(AI_MATKEY_SHININESS, ns) == AI_SUCCESS)
+        meshMaterial.Shininess = (ns > 1.0f) ? ns : 1.0f;
+
     std::cout << "diffuse: " << material->GetTextureCount(aiTextureType_DIFFUSE) << std::endl;
     std::cout << "specular: " << material->GetTextureCount(aiTextureType_SPECULAR) << std::endl;
     std::cout << "normal(height): " << material->GetTextureCount(aiTextureType_HEIGHT) << std::endl;
@@ -151,7 +198,7 @@ Mesh Model::processMesh(aiMesh *mesh, const aiScene *scene)
     textures.insert(textures.end(), heightMaps.begin(), heightMaps.end());
 
     // return a mesh object created from the extracted mesh data
-    return Mesh(vertices, indices, textures);
+    return Mesh(vertices, indices, textures, meshMaterial);
 }
 
 std::vector<Texture> Model::loadMaterialTextures(aiMaterial *mat, aiTextureType type, std::string typeName)
@@ -168,61 +215,41 @@ std::vector<Texture> Model::loadMaterialTextures(aiMaterial *mat, aiTextureType 
         {
             if (std::strcmp(textures_loaded[j].path.data(), texturePath.C_Str()) == 0)
             {
-                textures.push_back(textures_loaded[j]);
+                Texture cached = textures_loaded[j];
+                cached.type = typeName; // GL id는 재사용, 타입은 이번 요청 것으로
+                textures.push_back(cached);
                 skip = true;
                 break;
             }
         }
         if (!skip)
         { // if texture hasn't been loaded already, load it
+            // OBJ/MTL files authored on Windows use backslashes; assimp returns them verbatim
+            std::string filename = texturePath.C_Str();
+            std::replace(filename.begin(), filename.end(), '\\', '/');
+
+            // Only color maps are sRGB; specular/normal/height hold linear data
+            const bool srgb = (typeName == "texture_diffuse");
+
             Texture texture;
-            texture.id = TextureFromFile(texturePath.C_Str(), this->directory);
+            texture.id = LoadTexture2D(this->directory + '/' + filename, srgb);
+            if (texture.id == 0) // 로드 실패
+                texture.id = GetFallbackTexture(typeName);
             texture.type = typeName;
             texture.path = texturePath.C_Str();
             textures.push_back(texture);
             textures_loaded.push_back(texture);
         }
     }
+
+    if (textures.empty()) // 맵 자체가 없음
+    {
+        Texture texture;
+        texture.id = GetFallbackTexture(typeName);
+        texture.type = typeName;
+        texture.path = "__fallback_" + typeName;
+        textures.push_back(texture);
+        // textures_loaded에는 넣지 않습니다
+    }
     return textures;
-}
-
-uint32_t TextureFromFile(const char *path, const std::string &directory, bool gamma)
-{
-    std::string filename = std::string(path);
-    filename = directory + '/' + filename;
-
-    uint32_t textureID;
-    glGenTextures(1, &textureID);
-
-    int width, height, nrComponents;
-    uint8_t *data = stbi_load(filename.c_str(), &width, &height, &nrComponents, 0);
-    if (data)
-    {
-        uint32_t format;
-        if (nrComponents == 1)
-            format = GL_RED;
-        else if (nrComponents == 3)
-            format = GL_RGB;
-        else if (nrComponents == 4)
-            format = GL_RGBA;
-        else
-            std::cerr << "It can't happen" << std::endl;
-
-        glBindTexture(GL_TEXTURE_2D, textureID);
-        glTexImage2D(GL_TEXTURE_2D, 0, format, width, height, 0, format, GL_UNSIGNED_BYTE, data);
-        glGenerateMipmap(GL_TEXTURE_2D);
-
-        glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_S, GL_REPEAT);
-        glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_T, GL_REPEAT);
-        glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MIN_FILTER, GL_LINEAR_MIPMAP_LINEAR);
-        glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MAG_FILTER, GL_LINEAR);
-
-        stbi_image_free(data);
-    }
-    else
-    {
-        std::cout << "Texture failed to load at path: " << path << std::endl;
-        stbi_image_free(data);
-    }
-    return textureID;
 }
